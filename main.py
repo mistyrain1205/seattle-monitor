@@ -169,10 +169,10 @@ def main():
   articles_data = []
   collected = []
 
-  # ① 専用フィード（取得数を 2件 -> 5件 に増加）
+  # ① 専用フィード（取得数を 5件 -> 30件 に増加）
   for site, url in MARINERS_ONLY_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:5]:
+    for entry in feed.entries[:30]:
       collected.append(
           (site, entry.get("title"), entry.get("link"), entry.get("summary", ""))
       )
