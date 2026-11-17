@@ -10,11 +10,11 @@ import trafilatura
 # ==========================================
 # 設定エリア
 # ==========================================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "あなたのAPIキーをここに貼る")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 HISTORY_FILE = "articles.json"
-MAX_BATCH_SIZE = 30
+MAX_BATCH_SIZE = 15  # テスト用に少し少なめに設定
 MAX_DISPLAY_ARTICLES = 100
 
 MARINERS_ONLY_FEEDS = {
@@ -52,21 +52,6 @@ HEADERS = {
 }
 
 
-def load_history():
-  if os.path.exists(HISTORY_FILE):
-    try:
-      with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-    except Exception as e:
-      print(f"履歴読み込みエラー: {e}")
-  return []
-
-
-def save_history(articles):
-  with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-    json.dump(articles[:MAX_DISPLAY_ARTICLES], f, ensure_ascii=False, indent=2)
-
-
 def fetch_feed(url):
   try:
     res = requests.get(url, headers=HEADERS, timeout=10)
@@ -90,14 +75,13 @@ def extract_article_text(url, fallback_summary):
     if downloaded:
       text = trafilatura.extract(downloaded)
       if text and len(text) > 200:
-        return text[:1000]  # 30件まとめて全文翻訳するため、1記事あたり1000文字に調整
+        return text[:1000]
   except Exception as e:
     print(f"本文抽出スキップ ({url}): {e}")
   return fallback_summary
 
 
 def batch_translate_articles(articles_batch):
-  """最大30件の記事のタイトルと本文を1回のAPI呼び出しで一括翻訳する"""
   batch_text = ""
   for i, art in enumerate(articles_batch, 1):
     batch_text += f"\n--- 記事ID: {i} ---\n"
@@ -108,14 +92,13 @@ def batch_translate_articles(articles_batch):
 あなたはMLB専門の翻訳者です。以下の複数（全{len(articles_batch)}件）の英語ニュース記事について、日本のマリナーズファン向けに「タイトル」と「本文」を自然な日本語に翻訳してください。
 
 【出力ルール】
-1. 各記事ごとに、必ず以下の形式（ID番号を含む）で出力してください。箇条書きに要約する必要はありません。本文の内容をそのまま自然な日本語に翻訳してください。
+1. 各記事ごとに、必ず以下の形式（ID番号を含む）で出力してください。
 [ARTICLE_START: 記事IDの数字]
 TITLE: （タイトルの自然な日本語訳）
 BODY:
 （本文の自然な日本語訳）
 [ARTICLE_END]
 2. 全記事を省略せず、入力された順番通りに出力してください。
-3. 選手名やMLB専門用語、セイバーメトリクス指標（wRC+, FIP, WARなど）は自然な表記にしてください。
 
 【翻訳する記事データ】
 {batch_text}
@@ -190,18 +173,15 @@ def generate_html(articles_data):
 
 
 def main():
-  history_articles = load_history()
-  seen_urls = {art["link"] for art in history_articles}
-  print(f"過去の保存済み記事: {len(history_articles)} 件")
-
+  # 強制的に履歴を無視して空からスタートする
+  print("履歴ファイルを無視して新規取得を開始します。")
   new_candidates = []
 
   for site, url in MARINERS_ONLY_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:15]:
+    for entry in feed.entries[:10]:
       link = entry.get("link", "")
-      if link and link not in seen_urls:
-        seen_urls.add(link)
+      if link:
         new_candidates.append({
             "site": site,
             "title": entry.get("title", ""),
@@ -211,10 +191,9 @@ def main():
 
   for site, url in GENERAL_MLB_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:30]:
+    for entry in feed.entries[:20]:
       link = entry.get("link", "")
-      if link and link not in seen_urls and is_mariners_article(entry):
-        seen_urls.add(link)
+      if link and is_mariners_article(entry):
         new_candidates.append({
             "site": site,
             "title": entry.get("title", ""),
@@ -222,15 +201,19 @@ def main():
             "summary": entry.get("summary", ""),
         })
 
-  target_articles = new_candidates[:MAX_BATCH_SIZE]
-  print(
-      f"新着の未処理記事: {len(new_candidates)} 件中、今回処理するのは"
-      f" {len(target_articles)} 件です。"
-  )
+  # 重複URLを排除
+  unique_candidates = []
+  seen = set()
+  for item in new_candidates:
+    if item["link"] not in seen:
+      seen.add(item["link"])
+      unique_candidates.append(item)
+
+  target_articles = unique_candidates[:MAX_BATCH_SIZE]
+  print(f"今回処理する新着記事: {len(target_articles)} 件")
 
   if not target_articles:
-    print("新着記事がないため、Gemini APIは呼び出さずに終了します。")
-    generate_html(history_articles)
+    print("記事が見つかりませんでした。")
     return
 
   raw_articles = []
@@ -285,9 +268,11 @@ def main():
 
   print(f"新たに {len(newly_parsed)} 件の記事の翻訳が完了しました！")
 
-  updated_articles = (newly_parsed + history_articles)[:MAX_DISPLAY_ARTICLES]
-  save_history(updated_articles)
-  generate_html(updated_articles)
+  # 新しいデータをそのまま保存
+  with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+    json.dump(newly_parsed, f, ensure_ascii=False, indent=2)
+
+  generate_html(newly_parsed)
 
 
 if __name__ == "__main__":
