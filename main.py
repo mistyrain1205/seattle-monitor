@@ -14,8 +14,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 HISTORY_FILE = "articles.json"
-MAX_BATCH_SIZE = 50
-MAX_DISPLAY_ARTICLES = 150
+MAX_BATCH_SIZE = 12  # 一括翻訳の安定性と文字数確保のバランス用
+MAX_DISPLAY_ARTICLES = 100
 
 # 総合メディアや専門サイトを含むすべてのフィード
 FEEDS = {
@@ -27,7 +27,6 @@ FEEDS = {
     "ESPN": "https://www.espn.com/espn/rss/mlb/news",
 }
 
-# 網羅性を高めるため、チーム名や地名に引っかかったものを広く拾う
 KEYWORDS = ["mariners", "seattle"]
 
 HEADERS = {
@@ -68,7 +67,6 @@ def is_target_article(entry):
   summary = entry.get("summary", "").lower()
   tags = " ".join([t.get("term", "").lower() for t in entry.get("tags", [])])
   combined = f"{title} {summary} {tags}"
-  # マリナーズ公式系は全通し、総合メディアはキーワード判定
   return any(kw in combined for kw in KEYWORDS)
 
 
@@ -78,17 +76,18 @@ def extract_article_text(url, fallback_summary):
     if downloaded:
       text = trafilatura.extract(downloaded)
       if text and len(text) > 200:
-        if len(text) > 3000:
-          # 3000文字以内で最後のピリオドを探し、文の途中で切れないようにする
-          cut_text = text[:3000]
+        # 最大3500文字に拡張 ＆ 文末（ピリオド）で綺麗にカット
+        if len(text) > 3500:
+          cut_text = text[:3500]
           last_period = cut_text.rfind(".")
-          if last_period > 1500:
+          if last_period > 1800:
             return cut_text[: last_period + 1]
           return cut_text
         return text
   except Exception as e:
     print(f"本文抽出スキップ ({url}): {e}")
   return fallback_summary
+
 
 def batch_translate_articles(articles_batch):
   batch_text = ""
@@ -190,12 +189,10 @@ def main():
 
   for site, url in FEEDS.items():
     feed = fetch_feed(url)
-    # マリナーズ特化サイトは上位を多めに、総合メディアは幅広くチェック
     limit = 20 if "Mariners" in site or "Lookout" in site else 40
     for entry in feed.entries[:limit]:
       link = entry.get("link", "")
       if link and link not in seen_urls:
-        # マリナーズ特化フィードはそのまま、総合系はキーワード判定
         if "Mariners" in site or "Lookout" in site or is_target_article(entry):
           seen_urls.add(link)
           new_candidates.append({
@@ -244,7 +241,7 @@ def main():
       header_and_body = block.split("[ARTICLE_END]")[0]
       first_line, rest = header_and_body.split("\n", 1)
       art_idx = int(first_line.replace("]", "").strip()) - 1
-      if art_idx < 0 or art_idx >= raw_articles.__len__():
+      if art_idx < 0 or art_idx >= len(raw_articles):
         continue
 
       orig = raw_articles[art_idx]
