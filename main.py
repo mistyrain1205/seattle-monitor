@@ -78,11 +78,17 @@ def extract_article_text(url, fallback_summary):
     if downloaded:
       text = trafilatura.extract(downloaded)
       if text and len(text) > 200:
-        return text[:1000]
+        if len(text) > 3000:
+          # 3000文字以内で最後のピリオドを探し、文の途中で切れないようにする
+          cut_text = text[:3000]
+          last_period = cut_text.rfind(".")
+          if last_period > 1500:
+            return cut_text[: last_period + 1]
+          return cut_text
+        return text
   except Exception as e:
     print(f"本文抽出スキップ ({url}): {e}")
   return fallback_summary
-
 
 def batch_translate_articles(articles_batch):
   batch_text = ""
