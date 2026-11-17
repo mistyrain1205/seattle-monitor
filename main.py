@@ -14,35 +14,21 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 HISTORY_FILE = "articles.json"
-MAX_BATCH_SIZE = 30  # テスト用に少し少なめに設定
-MAX_DISPLAY_ARTICLES = 100
+MAX_BATCH_SIZE = 50
+MAX_DISPLAY_ARTICLES = 150
 
-MARINERS_ONLY_FEEDS = {
+# 総合メディアや専門サイトを含むすべてのフィード
+FEEDS = {
     "MLB.com (Mariners)": "https://www.mlb.com/mariners/feeds/news/rss.xml",
     "Lookout Landing": "https://www.lookoutlanding.com/rss/index.xml",
     "MLBTR (Mariners)": "https://www.mlbtraderumors.com/seattle-mariners/feed",
-}
-
-GENERAL_MLB_FEEDS = {
     "FanGraphs": "https://blogs.fangraphs.com/feed/",
     "Just Baseball": "https://www.justbaseball.com/feed/",
     "ESPN": "https://www.espn.com/espn/rss/mlb/news",
 }
 
-KEYWORDS = [
-    "mariners",
-    "seattle",
-    "julio rodriguez",
-    "cal raleigh",
-    "logan gilbert",
-    "george kirby",
-    "bryce miller",
-    "bryan woo",
-    "andres munoz",
-    "j.p. crawford",
-    "randy arozarena",
-    "victor robles",
-]
+# 網羅性を高めるため、チーム名や地名に引っかかったものを広く拾う
+KEYWORDS = ["mariners", "seattle"]
 
 HEADERS = {
     "User-Agent": (
@@ -50,6 +36,21 @@ HEADERS = {
         " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+
+def load_history():
+  if os.path.exists(HISTORY_FILE):
+    try:
+      with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+    except Exception as e:
+      print(f"履歴読み込みエラー: {e}")
+  return []
+
+
+def save_history(articles):
+  with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+    json.dump(articles[:MAX_DISPLAY_ARTICLES], f, ensure_ascii=False, indent=2)
 
 
 def fetch_feed(url):
@@ -62,11 +63,13 @@ def fetch_feed(url):
     return feedparser.FeedParserDict(entries=[])
 
 
-def is_mariners_article(entry):
+def is_target_article(entry):
   title = entry.get("title", "").lower()
   summary = entry.get("summary", "").lower()
   tags = " ".join([t.get("term", "").lower() for t in entry.get("tags", [])])
-  return any(kw in f"{title} {summary} {tags}" for kw in KEYWORDS)
+  combined = f"{title} {summary} {tags}"
+  # マリナーズ公式系は全通し、総合メディアはキーワード判定
+  return any(kw in combined for kw in KEYWORDS)
 
 
 def extract_article_text(url, fallback_summary):
@@ -173,47 +176,38 @@ def generate_html(articles_data):
 
 
 def main():
-  # 強制的に履歴を無視して空からスタートする
-  print("履歴ファイルを無視して新規取得を開始します。")
+  history_articles = load_history()
+  seen_urls = {art["link"] for art in history_articles}
+  print(f"過去の保存済み記事: {len(history_articles)} 件")
+
   new_candidates = []
 
-  for site, url in MARINERS_ONLY_FEEDS.items():
+  for site, url in FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:10]:
+    # マリナーズ特化サイトは上位を多めに、総合メディアは幅広くチェック
+    limit = 20 if "Mariners" in site or "Lookout" in site else 40
+    for entry in feed.entries[:limit]:
       link = entry.get("link", "")
-      if link:
-        new_candidates.append({
-            "site": site,
-            "title": entry.get("title", ""),
-            "link": link,
-            "summary": entry.get("summary", ""),
-        })
+      if link and link not in seen_urls:
+        # マリナーズ特化フィードはそのまま、総合系はキーワード判定
+        if "Mariners" in site or "Lookout" in site or is_target_article(entry):
+          seen_urls.add(link)
+          new_candidates.append({
+              "site": site,
+              "title": entry.get("title", ""),
+              "link": link,
+              "summary": entry.get("summary", ""),
+          })
 
-  for site, url in GENERAL_MLB_FEEDS.items():
-    feed = fetch_feed(url)
-    for entry in feed.entries[:20]:
-      link = entry.get("link", "")
-      if link and is_mariners_article(entry):
-        new_candidates.append({
-            "site": site,
-            "title": entry.get("title", ""),
-            "link": link,
-            "summary": entry.get("summary", ""),
-        })
-
-  # 重複URLを排除
-  unique_candidates = []
-  seen = set()
-  for item in new_candidates:
-    if item["link"] not in seen:
-      seen.add(item["link"])
-      unique_candidates.append(item)
-
-  target_articles = unique_candidates[:MAX_BATCH_SIZE]
-  print(f"今回処理する新着記事: {len(target_articles)} 件")
+  target_articles = new_candidates[:MAX_BATCH_SIZE]
+  print(
+      f"新着の未処理記事: {len(new_candidates)} 件中、今回処理するのは"
+      f" {len(target_articles)} 件です。"
+  )
 
   if not target_articles:
-    print("記事が見つかりませんでした。")
+    print("新着記事がないため、Gemini APIは呼び出さずに終了します。")
+    generate_html(history_articles)
     return
 
   raw_articles = []
@@ -244,7 +238,7 @@ def main():
       header_and_body = block.split("[ARTICLE_END]")[0]
       first_line, rest = header_and_body.split("\n", 1)
       art_idx = int(first_line.replace("]", "").strip()) - 1
-      if art_idx < 0 or art_idx >= len(raw_articles):
+      if art_idx < 0 or art_idx >= raw_articles.__len__():
         continue
 
       orig = raw_articles[art_idx]
@@ -268,11 +262,9 @@ def main():
 
   print(f"新たに {len(newly_parsed)} 件の記事の翻訳が完了しました！")
 
-  # 新しいデータをそのまま保存
-  with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-    json.dump(newly_parsed, f, ensure_ascii=False, indent=2)
-
-  generate_html(newly_parsed)
+  updated_articles = (newly_parsed + history_articles)[:MAX_DISPLAY_ARTICLES]
+  save_history(updated_articles)
+  generate_html(updated_articles)
 
 
 if __name__ == "__main__":
