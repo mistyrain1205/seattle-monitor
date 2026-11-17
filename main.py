@@ -5,6 +5,7 @@ import feedparser
 from google import genai
 from google.genai import types
 import requests
+import trafilatura
 
 # ==========================================
 # 設定エリア
@@ -83,21 +84,40 @@ def is_mariners_article(entry):
   return any(kw in f"{title} {summary} {tags}" for kw in KEYWORDS)
 
 
-def batch_translate_titles(articles_batch):
-  """最大30件の記事タイトルを1回のAPI呼び出しで一括翻訳する"""
+def extract_article_text(url, fallback_summary):
+  try:
+    downloaded = trafilatura.fetch_url(url)
+    if downloaded:
+      text = trafilatura.extract(downloaded)
+      if text and len(text) > 200:
+        return text[:1000]  # 30件まとめて全文翻訳するため、1記事あたり1000文字に調整
+  except Exception as e:
+    print(f"本文抽出スキップ ({url}): {e}")
+  return fallback_summary
+
+
+def batch_translate_articles(articles_batch):
+  """最大30件の記事のタイトルと本文を1回のAPI呼び出しで一括翻訳する"""
   batch_text = ""
   for i, art in enumerate(articles_batch, 1):
-    batch_text += f"{i}. {art['title']}\n"
+    batch_text += f"\n--- 記事ID: {i} ---\n"
+    batch_text += f"タイトル: {art['title']}\n"
+    batch_text += f"本文: {art['content']}\n"
 
   prompt = f"""
-あなたはMLB専門の翻訳者です。以下の英語のニュース記事タイトル（全{len(articles_batch)}件）を、日本のマリナーズファン向けに自然な日本語に翻訳してください。
+あなたはMLB専門の翻訳者です。以下の複数（全{len(articles_batch)}件）の英語ニュース記事について、日本のマリナーズファン向けに「タイトル」と「本文」を自然な日本語に翻訳してください。
 
 【出力ルール】
-1. 必ず「番号. 日本語訳」の形式で、1行に1記事ずつ出力してください。（例: 1. フリオ・ロドリゲスが決勝ホームランを放つ）
-2. 選手名やMLB専門用語は自然なカタカナ・表記にしてください。
-3. 余計な挨拶や説明は一切書かず、翻訳リストのみを出力してください。
+1. 各記事ごとに、必ず以下の形式（ID番号を含む）で出力してください。箇条書きに要約する必要はありません。本文の内容をそのまま自然な日本語に翻訳してください。
+[ARTICLE_START: 記事IDの数字]
+TITLE: （タイトルの自然な日本語訳）
+BODY:
+（本文の自然な日本語訳）
+[ARTICLE_END]
+2. 全記事を省略せず、入力された順番通りに出力してください。
+3. 選手名やMLB専門用語、セイバーメトリクス指標（wRC+, FIP, WARなど）は自然な表記にしてください。
 
-【翻訳するタイトル一覧】
+【翻訳する記事データ】
 {batch_text}
 """
   try:
@@ -126,33 +146,35 @@ def generate_html(articles_data):
         body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; }}
         .container {{ max-width: 800px; margin: 0 auto; }}
         h1 {{ color: #0c2340; text-align: center; margin-bottom: 5px; }}
-        .subtitle {{ text-align: center; color: #666; font-size: 0.9rem; margin-bottom: 25px; }}
-        .card {{ background: #fff; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 5px solid #005c5c; display: flex; flex-direction: column; gap: 6px; }}
-        .meta-row {{ display: flex; justify-content: space-between; align-items: center; }}
-        .site-tag {{ display: inline-block; background: #0c2340; color: #fff; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; }}
+        .subtitle {{ text-align: center; color: #666; font-size: 0.9rem; margin-bottom: 30px; }}
+        .card {{ background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 5px solid #005c5c; }}
+        .meta-row {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }}
+        .site-tag {{ display: inline-block; background: #0c2340; color: #fff; font-size: 0.75rem; padding: 3px 8px; border-radius: 4px; }}
         .date-tag {{ font-size: 0.8rem; color: #888; }}
-        .article-title {{ font-size: 1.05rem; font-weight: bold; color: #111; text-decoration: none; line-height: 1.4; }}
-        .article-title:hover {{ color: #005c5c; text-decoration: underline; }}
-        .orig-title {{ font-size: 0.8rem; color: #777; }}
+        .article-title {{ font-size: 1.15rem; font-weight: bold; color: #111; margin-bottom: 12px; line-height: 1.4; }}
+        .body-box {{ background: #f8f9fa; padding: 15px; border-radius: 6px; font-size: 0.95rem; line-height: 1.75; margin-bottom: 12px; color: #222; white-space: pre-wrap; max-height: 350px; overflow-y: auto; }}
+        .link-btn {{ display: inline-block; font-size: 0.85rem; color: #005c5c; text-decoration: none; font-weight: bold; }}
+        .link-btn:hover {{ text-decoration: underline; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>マリナーズ最新ニュース一覧</h1>
+        <h1>マリナーズ最新ニュース</h1>
         <div class="subtitle">最終更新: {now_str} / 掲載件数: {len(articles_data)}件</div>
 """
 
   for art in articles_data:
     added_date = art.get("added_at", "")
-    orig_title = art.get("orig_title", "")
+    jp_body = art.get("jp_body", "")
     html_content += f"""
         <div class="card">
             <div class="meta-row">
                 <span class="site-tag">{art['site']}</span>
                 <span class="date-tag">{added_date}</span>
             </div>
-            <a class="article-title" href="{art['link']}" target="_blank">{art['jp_title']} &rarr;</a>
-            <div class="orig-title">{orig_title}</div>
+            <div class="article-title">{art['jp_title']}</div>
+            <div class="body-box">{jp_body}</div>
+            <a class="link-btn" href="{art['link']}" target="_blank">元記事を読む (英語) &rarr;</a>
         </div>
     """
 
@@ -184,6 +206,7 @@ def main():
             "site": site,
             "title": entry.get("title", ""),
             "link": link,
+            "summary": entry.get("summary", ""),
         })
 
   for site, url in GENERAL_MLB_FEEDS.items():
@@ -196,6 +219,7 @@ def main():
             "site": site,
             "title": entry.get("title", ""),
             "link": link,
+            "summary": entry.get("summary", ""),
         })
 
   target_articles = new_candidates[:MAX_BATCH_SIZE]
@@ -209,37 +233,57 @@ def main():
     generate_html(history_articles)
     return
 
+  raw_articles = []
+  for item in target_articles:
+    print(f"本文抽出: [{item['site']}] {item['title']}")
+    body_text = extract_article_text(item["link"], item["summary"])
+    raw_articles.append({
+        "site": item["site"],
+        "title": item["title"],
+        "link": item["link"],
+        "content": body_text,
+    })
+
   print(
-      f"Geminiに {len(target_articles)} 件のタイトルを一括送信します（API消費:"
-      " 1回のみ）..."
+      f"Geminiに {len(raw_articles)} 件を一括送信します（API消費: 1回のみ）..."
   )
-  response_text = batch_translate_titles(target_articles)
+  response_text = batch_translate_articles(raw_articles)
 
   jst = datetime.timezone(datetime.timedelta(hours=9))
   added_time_str = datetime.datetime.now(jst).strftime("%m/%d %H:%M取得")
 
   newly_parsed = []
-  for line in response_text.strip().split("\n"):
-    line = line.strip()
-    if not line or "." not in line:
+  blocks = response_text.split("[ARTICLE_START:")
+  for block in blocks[1:]:
+    if "[ARTICLE_END]" not in block:
       continue
     try:
-      num_str, jp_title = line.split(".", 1)
-      idx = int(num_str.strip()) - 1
-      if 0 <= idx < len(target_articles):
-        orig = target_articles[idx]
-        newly_parsed.append({
-            "site": orig["site"],
-            "jp_title": jp_title.strip(),
-            "orig_title": orig["title"],
-            "link": orig["link"],
-            "added_at": added_time_str,
-        })
+      header_and_body = block.split("[ARTICLE_END]")[0]
+      first_line, rest = header_and_body.split("\n", 1)
+      art_idx = int(first_line.replace("]", "").strip()) - 1
+      if art_idx < 0 or art_idx >= len(raw_articles):
+        continue
+
+      orig = raw_articles[art_idx]
+
+      if "TITLE:" in rest and "BODY:" in rest:
+        title_part, body_part = rest.split("BODY:", 1)
+        jp_title = title_part.replace("TITLE:", "").strip()
+        jp_body = body_part.strip()
+
+        if jp_title and jp_body:
+          newly_parsed.append({
+              "site": orig["site"],
+              "jp_title": jp_title,
+              "jp_body": jp_body,
+              "link": orig["link"],
+              "added_at": added_time_str,
+          })
     except Exception as ex:
       print(f"パース処理スキップ: {ex}")
       continue
 
-  print(f"新たに {len(newly_parsed)} 件のタイトル翻訳が完了しました！")
+  print(f"新たに {len(newly_parsed)} 件の記事の翻訳が完了しました！")
 
   updated_articles = (newly_parsed + history_articles)[:MAX_DISPLAY_ARTICLES]
   save_history(updated_articles)
