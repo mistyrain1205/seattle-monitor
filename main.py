@@ -10,7 +10,6 @@ import trafilatura
 # ==========================================
 # 設定エリア
 # ==========================================
-# 取得したAPIキーを設定（環境変数から読み込み）
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "あなたのAPIキーをここに貼る")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -145,7 +144,6 @@ def generate_html(articles_data):
     html_content += f"""
         <div class="card">
             <span class="site-tag">{art['site']}</span>
-            def title_block(): pass
             <div class="article-title">{jp_title}</div>
             <div class="summary-box">
                 <ul>{bullet_points}</ul>
@@ -169,18 +167,18 @@ def main():
   articles_data = []
   collected = []
 
-  # ① 専用フィード（取得数を 5件 -> 30件 に増加）
+  # ① 専用フィード（1日の制限を超えないよう、各サイト3件に調整）
   for site, url in MARINERS_ONLY_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:30]:
+    for entry in feed.entries[:3]:
       collected.append(
           (site, entry.get("title"), entry.get("link"), entry.get("summary", ""))
       )
 
-  # ② 全体フィード（検索対象を 15件 -> 30件 に増加）
+  # ② 全体フィード（検索対象を20件に調整）
   for site, url in GENERAL_MLB_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:30]:
+    for entry in feed.entries[:20]:
       if is_mariners_article(entry):
         collected.append(
             (site, entry.get("title"), entry.get("link"), entry.get("summary", ""))
@@ -196,7 +194,6 @@ def main():
     articles_data.append(
         {"site": site, "title": title, "link": link, "result": jp_result}
     )
-    # 記事数が増えるため、API制限に引っかからないよう4秒待機を維持
     time.sleep(4)
 
   # HTML生成
