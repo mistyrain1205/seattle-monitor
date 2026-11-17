@@ -68,27 +68,39 @@ def extract_article_text(url, fallback_summary):
     if downloaded:
       text = trafilatura.extract(downloaded)
       if text and len(text) > 200:
-        return text[:4000]
+        return text[:1500]  # まとめて送るため、1記事あたりの文字数を少しコンパクトに調整
   except Exception as e:
     print(f"本文抽出スキップ ({url}): {e}")
   return fallback_summary
 
 
-def translate_and_summarize(site, title, content):
+def batch_translate_and_summarize(articles_batch):
+  """複数の記事をまとめて1回で翻訳・要約する"""
+  # 送信するデータをテキストとして組み立てる
+  batch_text = ""
+  for i, art in enumerate(articles_batch, 1):
+    batch_text += f"\n--- 記事 {i} ---\n"
+    batch_text += f"掲載サイト: {art['site']}\n"
+    batch_text += f"タイトル: {art['title']}\n"
+    batch_text += f"本文: {art['content']}\n"
+
   prompt = f"""
-あなたはMLB専門のスポーツライターです。以下の英語記事（{site}掲載）を日本のマリナーズファン向けに翻訳・要約してください。
+あなたはMLB専門のスポーツライターです。以下の複数（最大10件）の記事を、日本のマリナーズファン向けにそれぞれ翻訳・要約してください。
 
 【出力ルール】
-1. 1行目に「■ タイトルの自然な日本語訳」を書く（「■」を含めないで、純粋なタイトルテキストのみにしてください）
-2. 2行目以降に、記事の要点を箇条書き（・）で3つにまとめる
-3. セイバーメトリクス指標や選手名はそのまま残す
-4. 余計な前置きは一切書かない
+1. 各記事ごとに、必ず以下の形式で出力してください。
+[ARTICLE_START]
+サイト名: （元のサイト名）
+■ （タイトルの自然な日本語訳）
+・要点1
+・要点2
+・要点3
+[ARTICLE_END]
+2. 記事の順番を崩さず、入力された順番通りに出力してください。
+3. セイバーメトリクス指標や選手名はそのまま残してください。
 
-【元記事タイトル】
-{title}
-
-【元記事本文】
-{content}
+【処理する記事データ】
+{batch_text}
 """
   try:
     response = client.models.generate_content(
@@ -98,7 +110,8 @@ def translate_and_summarize(site, title, content):
     )
     return response.text
   except Exception as e:
-    return f"■ 翻訳エラー\n・エラーが発生しました: {e}"
+    print(f"一括翻訳エラー: {e}")
+    return ""
 
 
 def generate_html(articles_data):
@@ -133,20 +146,12 @@ def generate_html(articles_data):
 """
 
   for art in articles_data:
-    lines = art["result"].strip().split("\n")
-    jp_title = lines[0].replace("■", "").strip()
-    bullet_points = "".join([
-        f"<li>{l.replace('・','').strip()}</li>"
-        for l in lines[1:]
-        if l.strip()
-    ])
-
     html_content += f"""
         <div class="card">
             <span class="site-tag">{art['site']}</span>
-            <div class="article-title">{jp_title}</div>
+            <div class="article-title">{art['jp_title']}</div>
             <div class="summary-box">
-                <ul>{bullet_points}</ul>
+                <ul>{art['bullet_points']}</ul>
             </div>
             <a class="link-btn" href="{art['link']}" target="_blank">元記事を読む (英語) &rarr;</a>
         </div>
@@ -164,40 +169,105 @@ def generate_html(articles_data):
 
 
 def main():
-  articles_data = []
   collected = []
 
-  # ① 専用フィード（1日の制限を超えないよう、各サイト3件に調整）
+  # 1. 各専用フィードから記事を集める（例: 各5件、合計15件程度）
   for site, url in MARINERS_ONLY_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:3]:
-      collected.append(
-          (site, entry.get("title"), entry.get("link"), entry.get("summary", ""))
-      )
+    for entry in feed.entries[:5]:
+      collected.append({
+          "site": site,
+          "title": entry.get("title", ""),
+          "link": entry.get("link", ""),
+          "summary": entry.get("summary", ""),
+      })
 
-  # ② 全体フィード（検索対象を20件に調整）
+  # 2. 全体フィードからも集める
   for site, url in GENERAL_MLB_FEEDS.items():
     feed = fetch_feed(url)
-    for entry in feed.entries[:20]:
+    for entry in feed.entries[:15]:
       if is_mariners_article(entry):
-        collected.append(
-            (site, entry.get("title"), entry.get("link"), entry.get("summary", ""))
-        )
+        collected.append({
+            "site": site,
+            "title": entry.get("title", ""),
+            "link": entry.get("link", ""),
+            "summary": entry.get("summary", ""),
+        })
 
-  print(f"合計 {len(collected)} 件の記事を処理します...\n" + "=" * 50)
+  print(
+      f"合計 {len(collected)} 件の記事の本文を抽出します..."
+      + "=" * 50
+  )
 
-  for site, title, link, summary in collected:
-    print(f"処理中: [{site}] {title}")
-    body_text = extract_article_text(link, summary)
-    jp_result = translate_and_summarize(site, title, body_text)
+  # 本文を事前に抽出しておく
+  raw_articles = []
+  for item in collected:
+    print(f"本文抽出: [{item['site']}] {item['title']}")
+    body_text = extract_article_text(item["link"], item["summary"])
+    raw_articles.append({
+        "site": item["site"],
+        "title": item["title"],
+        "link": item["link"],
+        "content": body_text,
+    })
 
-    articles_data.append(
-        {"site": site, "title": title, "link": link, "result": jp_result}
+  # 3. 10件ずつ（または設定した単位で）まとめてGeminiに一括送信する
+  batch_size = 10
+  parsed_articles = []
+
+  for i in range(0, len(raw_articles), batch_size):
+    batch = raw_articles[i : i + batch_size]
+    print(
+        f"Geminiに {len(batch)} 件の記事を一括で翻訳・要約させます..."
     )
-    time.sleep(4)
 
+    response_text = batch_translate_and_summarize(batch)
+
+    # 返ってきた一括テキストを [ARTICLE_END] などの目印で綺麗に切り分ける
+    blocks = response_text.split("[ARTICLE_START]")
+    for idx, block in enumerate(blocks):
+      if "[ARTICLE_END]" not in block:
+        continue
+      try:
+        # ブロックの中身を解析
+        lines = [
+            line.strip()
+            for line in block.split("[ARTICLE_END]")[0].split("\n")
+            if line.strip()
+        ]
+
+        # 該当する元のリンクを紐付け
+        original_index = i + idx - 1 if idx - 1 < len(batch) else len(batch) - 1
+        if original_index < 0:
+          original_index = 0
+        link = batch[original_index]["link"]
+        site = batch[original_index]["site"]
+
+        jp_title = ""
+        bullets = []
+        for line in lines:
+          if line.startswith("■"):
+            jp_title = line.replace("■", "").strip()
+          elif line.startswith("・"):
+            bullets.append(f"<li>{line.replace('・','').strip()}</li>")
+
+        if jp_title and bullets:
+          parsed_articles.append({
+              "site": site,
+              "jp_title": jp_title,
+              "link": link,
+              "bullet_points": "".join(bullets),
+          })
+      except Exception as ex:
+        print(f"パース処理エラー: {ex}")
+        continue
+
+    # 1括送るごとに少しだけウェイトを入れる（念のため）
+    time.sleep(2)
+
+  print(f"合計 {len(parsed_articles)} 件のカードを生成します。")
   # HTML生成
-  generate_html(articles_data)
+  generate_html(parsed_articles)
 
 
 if __name__ == "__main__":
