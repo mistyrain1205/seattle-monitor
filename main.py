@@ -14,7 +14,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 HISTORY_FILE = "articles.json"
-MAX_BATCH_SIZE = 15  # テスト用に少し少なめに設定
+MAX_BATCH_SIZE = 30  # テスト用に少し少なめに設定
 MAX_DISPLAY_ARTICLES = 100
 
 MARINERS_ONLY_FEEDS = {
