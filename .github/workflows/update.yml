@@ -2,9 +2,10 @@ name: Update MLB Digest
 
 on:
   schedule:
-    # 毎日、日本時間の 10:00（UTC 01:00）と 15:00（UTC 06:00）に自動実行
+    # UTCの 1時0分 と 6時0分 に実行 
+    # (＝ 日本時間の 10:00 と 15:00 になります)
     - cron: '0 1,6 * * *'
-  workflow_dispatch: # これがあると手動でもいつでも実行できます
+  workflow_dispatch: # 手動実行ボタンも残す場合
 
 jobs:
   build:
