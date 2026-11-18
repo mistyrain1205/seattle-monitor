@@ -96,32 +96,41 @@ def batch_translate_articles(articles_batch):
     batch_text += f"タイトル: {art['title']}\n"
     batch_text += f"本文: {art['content']}\n"
 
+  # 要約（ダイジェスト）形式を指定するプロンプトに変更
   prompt = f"""
-あなたはMLB専門の翻訳者です。以下の複数（全{len(articles_batch)}件）の英語ニュース記事について、日本のマリナーズファン向けに「タイトル」と「本文」を自然な日本語に翻訳してください。
+あなたはMLB専門の翻訳者・編集者です。以下の複数（全{len(articles_batch)}件）の英語ニュース記事について、日本のマリナーズファン向けに「タイトル」と、本文の重要なポイントを簡潔にまとめた「日本語の要約（ダイジェスト）」を作成してください。
 
 【出力ルール】
 1. 各記事ごとに、必ず以下の形式（ID番号を含む）で出力してください。
 [ARTICLE_START: 記事IDの数字]
 TITLE: （タイトルの自然な日本語訳）
 BODY:
-（本文の自然な日本語訳）
+（本文の重要なポイントをスッキリまとめた日本語の要約・ダイジェスト。長すぎる場合は要点を凝縮し、絶対に途中で切れないように完結させてください）
 [ARTICLE_END]
 2. 全記事を省略せず、入力された順番通りに出力してください。
 
-【翻訳する記事データ】
+【翻訳・要約する記事データ】
 {batch_text}
 """
-  try:
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.3),
-    )
-    return response.text
-  except Exception as e:
-    print(f"一括翻訳エラー: {e}")
-    return ""
 
+  max_retries = 3
+  for attempt in range(1, max_retries + 1):
+    try:
+      # Gemini 3.1 Flash-Lite を指定
+      response = client.models.generate_content(
+          model="gemini-3.1-flash-lite",
+          contents=prompt,
+          config=types.GenerateContentConfig(temperature=0.3),
+      )
+      return response.text
+    except Exception as e:
+      print(f"一括翻訳エラー (試行 {attempt}/{max_retries}): {e}")
+      if attempt < max_retries:
+        print("5秒後に自動で再試行します...")
+        time.sleep(5)
+      else:
+        print("最大試行回数に達したため、今回はスキップします。")
+  return ""
 
 def generate_html(articles_data):
   jst = datetime.timezone(datetime.timedelta(hours=9))
